@@ -1,0 +1,45 @@
+[build-system]
+requires = ["scikit-build-core>=0.10"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "lua-python-bridge"
+version = "0.1.0"
+description = "Lua inside Python (import lua) and Python inside Lua (require 'python')"
+readme = "README.md"
+license = { text = "LGPL-2.1-or-later" }
+requires-python = ">=3.10"
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: C",
+  "Programming Language :: Lua",
+  "License :: OSI Approved :: GNU Lesser General Public License v2 or later (LGPLv2+)",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.scikit-build]
+minimum-version = "0.10"
+cmake.version = ">=3.26"
+wheel.py-api = "cp310"
+wheel.packages = []
+build-dir = "build/{wheel_tag}"
+cmake.define.LPB_BUILD_PYTHON_MODULE = "ON"
+cmake.define.LPB_BUILD_LUA_MODULE = "OFF"
+sdist.exclude = [".github", "build", "PLAN.md", "tools"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+
+[tool.cibuildwheel]
+# One abi3 wheel per platform: built for cp310, then reused and tested on every later version.
+build = "cp310-* cp311-* cp312-* cp313-* cp314-*"
+skip = "*-win32 *_i686"
+archs = ["native"]          # the CI matrix has one runner per architecture
+test-extras = ["test"]
+test-command = "pytest {project}/tests/python -q"
