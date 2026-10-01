@@ -1,0 +1,15 @@
+.DS_Store
+/build/
+/build-*/
+/dist/
+/_skbuild/
+*.so
+*.dylib
+*.dll
+*.pyd
+*.o
+*.obj
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.venv/
