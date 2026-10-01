@@ -1,6 +1,10 @@
 /*
  * Embedding test: a C host with several Lua states and threads, each loading the Lua module
  * "python" through require (LUA_CPATH must point at the built module).
+ *
+ * Covers the ownership rules of PLAN.md 5.8: states on one thread calling each other through
+ * Python ("borrowing"), threads waiting for a state that its host is running, and states moving
+ * between threads.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,21 +14,55 @@
 #include "lauxlib.h"
 #include "lualib.h"
 
+/* ------------------------------------------------------------------------------------------ */
+/* Threads                                                                                    */
+/* ------------------------------------------------------------------------------------------ */
+
+typedef struct job {
+    void (*fn)(struct job *);
+    lua_State *L;             /* input: a state to use (may be NULL) */
+    int index;
+    int failed;               /* output */
+} job;
+
 #ifdef _WIN32
 #  include <windows.h>
 typedef HANDLE thread_t;
-static DWORD WINAPI thread_main(LPVOID arg);
-static void thread_start(thread_t *t, void *arg) { *t = CreateThread(NULL, 0, thread_main, arg, 0, NULL); }
+static DWORD WINAPI trampoline(LPVOID p) { ((job *)p)->fn((job *)p); return 0; }
+static void thread_start(thread_t *t, job *j) { *t = CreateThread(NULL, 0, trampoline, j, 0, NULL); }
 static void thread_join(thread_t t) { WaitForSingleObject(t, INFINITE); CloseHandle(t); }
 #else
 #  include <pthread.h>
+#  include <time.h>
 typedef pthread_t thread_t;
-static void *thread_main(void *arg);
-static void thread_start(thread_t *t, void *arg) { pthread_create(t, NULL, thread_main, arg); }
+static void *trampoline(void *p) { ((job *)p)->fn((job *)p); return NULL; }
+static void thread_start(thread_t *t, job *j) { pthread_create(t, NULL, trampoline, j); }
 static void thread_join(thread_t t) { pthread_join(t, NULL); }
 #endif
 
-static int failures;
+/* ------------------------------------------------------------------------------------------ */
+/* Helpers                                                                                    */
+/* ------------------------------------------------------------------------------------------ */
+
+static int failures;          /* main thread only */
+static const char *volatile current_step = "startup";
+
+/* Deadlocks are the failure mode of the ownership rules: report them instead of hanging. */
+#define WATCHDOG_SECONDS 120
+static void watchdog(job *j) {
+    (void)j;
+#ifdef _WIN32
+    Sleep(WATCHDOG_SECONDS * 1000);
+#else
+    {
+        struct timespec ts = {WATCHDOG_SECONDS, 0};
+        while (nanosleep(&ts, &ts) != 0) {}
+    }
+#endif
+    fprintf(stderr, "FAIL timeout after %d s (deadlock?) in: %s\n", WATCHDOG_SECONDS, current_step);
+    fflush(stderr);
+    _Exit(3);
+}
 
 static lua_State *new_state(void) {
     lua_State *L = luaL_newstate();
@@ -32,49 +70,86 @@ static lua_State *new_state(void) {
     return L;
 }
 
-static int run(lua_State *L, const char *what, const char *code) {
+/* Runs a chunk; returns 1 and reports on failure. */
+static int run_chunk(lua_State *L, const char *what, const char *code) {
     if (luaL_dostring(L, code) != LUA_OK) {
         fprintf(stderr, "FAIL %s: %s\n", what, lua_tostring(L, -1));
         lua_pop(L, 1);
-        failures++;
         return 1;
     }
     return 0;
 }
 
-#define NTHREADS 4
-static int thread_failed[NTHREADS];
-
-#ifdef _WIN32
-static DWORD WINAPI thread_main(LPVOID arg)
-#else
-static void *thread_main(void *arg)
-#endif
-{
-    int i = (int)(size_t)arg;
-    lua_State *L = new_state();
-    if (luaL_dostring(L,
-            "local python = require 'python'\n"
-            "local s = 0\n"
-            "for i = 1, 200 do s = s + python.eval('sum(range(10))') end\n"
-            "assert(s == 200 * 45, s)\n"
-            "local t = python.eval('lambda f: f(2)')(function(x) return x * 10 end)\n"
-            "assert(t == 20)\n") != LUA_OK) {
-        fprintf(stderr, "FAIL thread %d: %s\n", i, lua_tostring(L, -1));
-        thread_failed[i] = 1;
-    }
-    lua_close(L);
-    return 0;
+static void run(lua_State *L, const char *what, const char *code) {
+    current_step = what;
+    failures += run_chunk(L, what, code);
 }
+
+static void join_job(thread_t t, job *j) {
+    thread_join(t);
+    failures += j->failed;
+}
+
+/* ------------------------------------------------------------------------------------------ */
+/* Thread bodies                                                                              */
+/* ------------------------------------------------------------------------------------------ */
+
+/* Each worker has its own state and uses Python concurrently with the others. */
+static void worker(job *j) {
+    lua_State *L = new_state();
+    j->failed = run_chunk(L, "worker thread",
+        "local python = require 'python'\n"
+        "local s = 0\n"
+        "for i = 1, 200 do s = s + python.eval('sum(range(10))') end\n"
+        "assert(s == 200 * 45, s)\n"
+        "local t = python.eval('lambda f: f(2)')(function(x) return x * 10 end)\n"
+        "assert(t == 20)\n");
+    lua_close(L);
+}
+
+/* A state on this thread calls f1, a function of the main thread's state 1. */
+static void cross_caller(job *j) {
+    lua_State *L = new_state();
+    j->failed = run_chunk(L, "state on another thread calls state 1",
+        "local python = require 'python'\n"
+        "python.execute('cross_result = f1(7)')\n");
+    lua_close(L);
+}
+
+/* State 1 moves to this thread (the main thread waits in join meanwhile). After its first call
+   into Python here, another state on this thread can borrow it. */
+static void migrate(job *j) {
+    lua_State *L5;
+    j->failed = run_chunk(j->L, "state 1 runs on another thread",
+        "assert(python.eval('1 + 1') == 2)\n");
+    L5 = new_state();
+    j->failed += run_chunk(L5, "a state on the new thread borrows state 1",
+        "local python = require 'python'\n"
+        "assert(python.eval('f1(3)') == 6)\n");
+    lua_close(L5);
+}
+
+/* ------------------------------------------------------------------------------------------ */
+
+#define NWORKERS 4
 
 int main(void) {
     lua_State *L1 = new_state(), *L2 = new_state(), *L3;
-    thread_t threads[NTHREADS];
+    thread_t threads[NWORKERS], t, wd;
+    job jobs[NWORKERS], j, wdjob;
     int i;
+
+    memset(&wdjob, 0, sizeof wdjob);
+    wdjob.fn = watchdog;
+    thread_start(&wd, &wdjob);              /* never joined: the process exits */
 
     run(L1, "state 1 setup",
         "python = require 'python'\n"
         "python.globals().f1 = function(x) return x * 2 end\n"
+        "python.globals().a_fn = function(n)\n"
+        "  if n == 0 then return 'a' end\n"
+        "  return python.eval('b_fn(' .. (n - 1) .. ')')\n"
+        "end\n"
         "t1 = {}\n"
         "python.globals().t1 = t1\n");
 
@@ -82,16 +157,74 @@ int main(void) {
         "python = require 'python'\n"
         "assert(python.eval('f1(21)') == 42)\n");
 
+    run(L2, "states on one thread call each other through Python, nested",
+        "python.globals().b_fn = function(n)\n"
+        "  if n == 0 then return 'b' end\n"
+        "  return python.eval('a_fn(' .. (n - 1) .. ')')\n"
+        "end\n"
+        "assert(python.eval('a_fn(6)') == 'a')\n"
+        "assert(python.eval('a_fn(5)') == 'b')\n"
+        "assert(python.eval('b_fn(9)') == 'a')\n");
+
     run(L2, "objects of another state are rejected",
         "local ok, err = pcall(python.eval, 't1')\n"
         "assert(not ok and tostring(err):find('different Lua state', 1, true), tostring(err))\n");
 
-    for (i = 0; i < NTHREADS; i++)
-        thread_start(&threads[i], (void *)(size_t)i);
-    for (i = 0; i < NTHREADS; i++) {
-        thread_join(threads[i]);
-        failures += thread_failed[i];
+    for (i = 0; i < NWORKERS; i++) {
+        memset(&jobs[i], 0, sizeof jobs[i]);
+        jobs[i].fn = worker;
+        jobs[i].index = i;
+        thread_start(&threads[i], &jobs[i]);
     }
+    current_step = "worker threads";
+    for (i = 0; i < NWORKERS; i++)
+        join_job(threads[i], &jobs[i]);
+
+    /* A borrow must hand the state back to the host: if it were left free, the Python thread
+       below could run state 1's Lua while the host is running it. */
+    run(L2, "borrow state 1 once more",
+        "assert(python.eval('f1(1)') == 2)\n");
+    run(L1, "after a borrow, the host owns its state again",
+        "ran_at = nil\n"
+        "python.globals().mark = function() ran_at = os.clock() return 1 end\n"
+        "python.execute([[\n"
+        "import threading, time\n"
+        "def later():\n"
+        "    time.sleep(0.1)\n"
+        "    mark()\n"
+        "th2 = threading.Thread(target=later)\n"
+        "th2.start()\n"
+        "]])\n"
+        "local t0 = os.clock()\n"
+        "while os.clock() - t0 < 0.5 do end\n"
+        "local busy_end = os.clock()\n"
+        "assert(ran_at == nil, 'a Python thread ran Lua while the host was running this state')\n"
+        "local deadline = os.time() + 10\n"
+        "while ran_at == nil and os.time() < deadline do python.serve(0.01) end\n"
+        "python.execute('th2.join()')\n"
+        "assert(ran_at and ran_at >= busy_end, 'the waiting thread never ran')\n");
+
+    /* A state on another thread must wait while this thread runs state 1. */
+    run(L1, "reset", "python.execute('cross_result = None')\n");
+    memset(&j, 0, sizeof j);
+    j.fn = cross_caller;
+    thread_start(&t, &j);
+    run(L1, "a state on another thread waits for the host, then runs",
+        "local t0 = os.clock()\n"
+        "while os.clock() - t0 < 0.3 do end\n"
+        "assert(python.eval('cross_result') == nil, 'ran while the host was running its state')\n"
+        "local deadline = os.time() + 10\n"
+        "while python.eval('cross_result') == nil and os.time() < deadline do python.serve(0.01) end\n"
+        "assert(python.eval('cross_result') == 14)\n");
+    join_job(t, &j);
+
+    /* The host moves state 1 to another thread. */
+    current_step = "state 1 moves to another thread";
+    memset(&j, 0, sizeof j);
+    j.fn = migrate;
+    j.L = L1;
+    thread_start(&t, &j);
+    join_job(t, &j);
 
     run(L1, "a Python thread calls into state 1 while it serves",
         "python.execute([[\n"
