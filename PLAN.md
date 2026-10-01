@@ -1,6 +1,6 @@
 # lua-python-bridge: restructure and fix plan
 
-> Temporary working document. **Status: plan under discussion, no code changed yet.** Last updated 2026-10-01.
+> Temporary working document. **Status: P0–P6 implemented and tested on macOS; P7 prepared (CI, cibuildwheel, rockspec) but not run or published.** Last updated 2026-10-01.
 >
 > - ✔ = reproduced in a scratch build: macOS arm64, Lua 5.4.7 built with `LUA_USE_APICHECK`, Homebrew CPython 3.10–3.14, and a stand-in for `dylib.hpp`.
 > - ◇ = from reading the code. This includes the Linux- and Windows-only paths, which could not be run here.
@@ -44,23 +44,26 @@
 
 ```
 CMakeLists.txt                      single project; builds either or both artifacts
-pyproject.toml                      scikit-build-core → wheel (cp310-abi3)
+pyproject.toml                      scikit-build-core → wheel (cp310-abi3); cibuildwheel settings
 rockspec/lua-python-bridge-scm-1.rockspec   luarocks, build.type = "cmake"
 src/
   bridge.h                          shared internal declarations
+  runtime.c                         runtimes, ownership protocol, crossings in both directions (§5.3, §5.8)
+  convert.c                         value conversion and error bridging (§5.4, §5.5)
   pythoninlua.c                     Python objects inside Lua   (Lua module "python")
   luainpython.c                     Lua objects inside Python   (Python module "lua")
-  runtime.c                         per-lua_State runtime handle, current-state tracking, locking (§5.3, §5.8)
-  pyapi_list.h                      X-macro list of every CPython symbol used (§5.1)
-  pyloader.c                        libpython discovery, loading and trampolines (rock build only, §5.2)
-  luacompat.h                       5.3 / 5.4 / 5.5 differences
+  pyloader.c                        libpython discovery, loading and trampolines (rock build only, §5.1, §5.2)
+  pyapi_list.h, pyapi.h             generated list of every CPython symbol used (§5.1)
+  luacompat.h, lpb_threads.h        Lua 5.3 / 5.4 / 5.5 differences; mutex, condition variable, TLS
+tools/gen_pyapi.py                  regenerates pyapi_list.h / pyapi.h from the vendored headers
 third_party/
-  lua-5.5.x/                        Lua sources compiled into the wheel
-  python3.10-headers/               one header tree + pyconfig/{macos,linux64,linux32,windows}.h
+  lua-5.5.1/                        Lua sources compiled into the wheel
+  python3.10-headers/               one header tree + pyconfig/{macos,linux,windows}/pyconfig.h
 python/lua.pyi                      type stubs
 tests/python/                       pytest (Python host)
 tests/lua/                          plain-Lua runner (Lua host); each test file in its own process
 tests/embed/                        small C host: several lua_States, threads, close and reopen
+tests/check_symbols.py              checks imported and exported symbols of both binaries
 .github/workflows/ci.yml
 LICENSE (LGPL-2.1, inherited from lunatic-python), NOTICE (Lua: MIT, Python headers: PSF)
 README.md
@@ -284,7 +287,7 @@ Format: **ID: problem.** Evidence. → Action. *(phase, see §6)*
 - **C2: Python is never shut down in a Lua host.**
   - ✔ Piped `print()` output from Python is lost at exit.
   - ✔ `atexit` handlers never run.
-  - → Flush `sys.stdout`/`sys.stderr` when each runtime closes. Register a process-exit hook that calls `Py_FinalizeEx` if the bridge initialized Python. *(P5)*
+  - → Flush `sys.stdout`/`sys.stderr` when each runtime closes. Register a process-exit hook that calls `Py_FinalizeEx` if the bridge initialized Python (not on Windows: a DLL's exit hooks run under the loader lock, where finalizing could deadlock). *(P5)*
 - **C3: The Python module's free function closes the Lua state unconditionally.**
   - `globalCloseFunc` ([luainpython.c:548-555](python/lunatic-python/src/luainpython.c#L548-L555)) runs at Python finalization or module dealloc. In a Lua host it would `lua_close` the **host's own** state; C2's fix makes that path reachable.
   - → Close only states the module created (`owns_state`, §5.3). *(P3)*
@@ -366,7 +369,7 @@ Format: **ID: problem.** Evidence. → Action. *(phase, see §6)*
 - **F7: Three copies of the vendored headers.**
   - They differ only in `pyconfig.h`/`patchlevel.h`; the Windows copy also lacks `pydtrace_probes.h`.
   - They come from three patch releases: 3.10.8 (the "unix" 64-bit config, generated on macOS, with no `HAVE_EPOLL`), 3.10.12 (Linux 32-bit) and 3.10.9 (Windows).
-  - → One tree from a single 3.10.x, plus `pyconfig/{macos,linux64,linux32,windows}.h` chosen by CMake. Record where each came from. Add `LPB_PYTHON_HEADERS=system` to use an installed Python's headers instead, still with `Py_LIMITED_API=0x030A0000`. *(P1)*
+  - → One tree (3.10.8) plus `pyconfig/{macos,linux,windows}/pyconfig.h` chosen by CMake. The Linux one takes its word-size dependent values from the compiler (`__SIZEOF_*__`), so it serves 32- and 64-bit. Provenance is in `third_party/README.md`. `LPB_PYTHON_HEADERS=system` uses an installed Python's headers instead, still with `Py_LIMITED_API=0x030A0000`. *(P1)*
 - **F8: No packaging metadata.**
   - → `pyproject.toml` (scikit-build-core, `wheel.py-api = "cp310"`).
   - → A rockspec (`build.type = "cmake"`, depends on `lua >= 5.3, < 5.6`).
@@ -401,9 +404,10 @@ Format: **ID: problem.** Evidence. → Action. *(phase, see §6)*
   - The static inline functions and macros in `Python.h` (`Py_DECREF` → `_Py_Dealloc`, …) keep working unmodified, with no copies of CPython internals.
   - The sources read as plain CPython code.
   - The compiler checks every trampoline's signature against the header declaration.
-- **Variadic functions** (`PyErr_Format`, `PyUnicode_FromFormat`, `PyArg_ParseTuple`) forward to their `V` variants.
+- **No variadic CPython functions are used** (no `PyErr_Format`, `PyArg_ParseTuple`, `PyObject_CallFunction`…), so every trampoline is a plain forward.
+- **The list is generated:** `tools/gen_pyapi.py` reads the exact prototypes from the vendored 3.10 limited-API headers and writes `pyapi_list.h` (functions and data) and `pyapi.h` (data macros). `tests/check_symbols.py` fails if the Lua module references any CPython symbol directly, which is how a missing entry shows up.
 - **Export control** keeps the trampolines private: a version script / `-exported_symbols_list` on POSIX. On Windows, `Py_NO_ENABLE_SHARED` turns the declarations into plain externs, so defining the trampolines is legal.
-- **The API set is all in the 3.10 limited API.** This was checked by compiling the list with `Py_LIMITED_API=0x030A0000` against the vendored headers. `PyGILState_Check` is not available and not used.
+- **The API set is all in the 3.10 limited API** (the generator only finds declarations there). `PyGILState_Check` is not available and not used.
   - `PyRun_StringFlags` is not in the limited API; use `Py_CompileString` + `PyEval_EvalCode` instead.
 - **A missing symbol at load** fails `require` with: "libpython at <path> lacks <symbol> (needs CPython ≥ 3.10)".
 
@@ -444,7 +448,9 @@ typedef struct lpb_runtime {
     /* lock and ownership bookkeeping, §5.8 */
 } lpb_runtime;
 
-typedef struct { PyObject_HEAD lpb_runtime *rt; int ref; } LuaObject;  /* iterator and sequence view: separate types */
+typedef struct { PyObject_HEAD lpb_runtime *rt; int ref; const void *ptr; const char *tname; } LuaObject;
+/* ptr (lua_topointer) and tname are taken at creation: ==, hash and repr need no Lua access.
+   The iterator and the sequence view are separate types. */
 ```
 
 - **Lua side.** `luaopen_python` creates the runtime and anchors a sentinel userdata in the registry. Its `__gc` sets `closed` and drops its reference.
@@ -452,8 +458,9 @@ typedef struct { PyObject_HEAD lpb_runtime *rt; int ref; } LuaObject;  /* iterat
   - Objects whose runtime is closed raise `LuaError("Lua state is closed")`, and their dealloc skips `luaL_unref`.
 - **Current state.** A thread-local stack of `{lua_State *L; lpb_runtime *rt}` frames gets a frame pushed whenever Lua calls into Python, popped on return.
   - A Python→Lua operation on object `o` uses the innermost frame's `L` if that frame belongs to `o->rt`. That is the running coroutine, which behaves exactly like a normal C function calling Lua.
-  - Otherwise it uses `o->rt->main`.
+  - Otherwise it takes a Lua thread from the runtime's **pool** (created with `lua_newthread`, anchored in the registry) and returns it afterwards. Using the main thread instead would let two Python threads, each suspended inside a Lua call, interleave frames on one Lua stack.
   - Module-level functions follow E6.
+- **Deferred releases.** Lua finalizers of `python.object` do not take the GIL: they queue the reference, and the next crossing drains the queue (or the finalizer itself, past 4096 pending). Python's `LuaObject` deallocation queues its `luaL_unref`, which the next thread owning the runtime performs.
 - **Stack discipline.** Every Python→Lua operation records `top = lua_gettop(L)`, checks space with `lua_checkstack` (raising `MemoryError` on failure), and restores `lua_settop(L, top)` on every path. `settop(0)` is never used.
 - **Protected calls.** Every Lua operation started from Python (index, newindex, len, tostring, next, compare, call, ref) runs inside `lua_pcall` through a small C trampoline. Inputs and outputs travel in a struct passed as light userdata, and a message handler collects the traceback (§5.4).
   - The only things done outside `pcall` are pushes that cannot raise.
@@ -487,7 +494,7 @@ typedef struct { PyObject_HEAD lpb_runtime *rt; int ref; } LuaObject;  /* iterat
 | table / function / userdata / thread / light userdata | `lua.LuaObject` | `lua.LuaObject` | the original Lua value (same runtime only) |
 | | | anything else | `python.object` (mode per §5.6) |
 
-Subclasses of `int`/`float`/`str` (`IntEnum`, `numpy.float64`, …) convert by value.
+Subclasses of `int`/`float`/`str` (`IntEnum`, `numpy.float64`, …) convert by value, and so do other `numbers.Integral` types (numpy integers, via `__index__`). Other numbers (`Fraction`, `Decimal`) stay Python objects, so they stay exact.
 
 ### 5.6 Indexing and iteration
 
@@ -560,7 +567,9 @@ Subclasses of `int`/`float`/`str` (`IntEnum`, `numpy.float64`, …) convert by v
 2. **Lua host.** Right after init, call `PyEval_SaveThread()`.
 3. **Runtime ownership.**
    - A Lua-host runtime is held by the host, except while its thread is inside Python through the bridge ("parked").
+   - The host thread itself may use its own runtime whenever it is in Python, even outside a call from that state ("borrowing"). This is what lets one thread run several Lua states that call each other through Python.
    - A Python-host runtime is free unless a Python→Lua call is running.
+   - A crossing from Lua into Python on a thread that already holds the GIL does not park: no other thread can run Python at that moment, and parking would make this thread wait for the runtime while holding the GIL.
 4. **A Python→Lua call, from any thread:**
    1. Release the GIL.
    2. Acquire the runtime: wait until it is parked or free. Re-acquiring on the same thread is allowed.
@@ -570,7 +579,8 @@ Subclasses of `int`/`float`/`str` (`IntEnum`, `numpy.float64`, …) convert by v
    - The lock order is always runtime → GIL, which rules out deadlocks.
 5. **Returning from Python to Lua.** Wait until no other thread holds the runtime, then continue.
 6. **What this means for Python threads.** In a Lua host they run freely. When they call a Lua callback, it runs whenever the Lua side is inside Python (`join()`, `time.sleep`, an asyncio loop) or calls `python.serve(seconds)`, which parks the runtime for that long.
-7. **Finalizers.** The `__gc` of Python objects needs the GIL; releases are batched.
+7. **Finalizers.** The `__gc` of Python objects does not take the GIL: releases are queued and batched (§5.3).
+8. **Exactly what runs with the GIL held:** value conversion (which may trigger Lua garbage collection, and so finalizers) and Python code. Calls into Lua functions and Lua operations that may run metamethods (`gettable`, `settable`, `len`, comparisons, `tostring`, `__pairs`) run without it.
 
 **Consequences:**
 - The GIL is acquired and released on every crossing; measure it and batch where possible.
@@ -590,16 +600,16 @@ Subclasses of `int`/`float`/`str` (`IntEnum`, `numpy.float64`, …) convert by v
 
 Each phase ends with green tests, and each fixed item gets a regression test.
 
-| Phase | Content | Exit criteria |
-|---|---|---|
-| **P0 Repo hygiene** | F11: `git init`, baseline commit of the current tree, `.gitignore`, remove `.DS_Store` | Baseline commit exists |
-| **P1 Build, packaging, loader** | §3.1 layout; one CMake; wheel (links Python, bundles Lua 5.5) + rock (§5.1–5.2); renames (E1, D2); A9, A16–A19, C5, C7, C8, D3, D4, F1–F3, F5–F10, F12, F13; test harness porting today's working behaviour | Wheel builds and smoke tests pass on 3.10–3.14 (macOS locally, Linux/Windows in CI). `luarocks make` works against Lua 5.3/5.4/5.5, and Lua-host smoke tests pass with libpython 3.10–3.14 found automatically. `grep -ri` for the old prefix is clean. Only the intended symbols are exported |
-| **P2 Limited API + type rewrite** | `Py_LIMITED_API=0x030A0000` everywhere; heap types via `PyType_FromSpec`; A8, A13, A14, F4 | The same rock and wheel binaries pass on 3.10–3.14; `-Wcast-function-type-strict` clean; Windows builds in CI |
-| **P3 Memory safety** | §5.3; A1–A7, A10 (stop exiting), A11, A12, A15, A20, C1 (`PyGILState` at every entry), C3, E6 | Every ✔ crash has a regression test; suites pass under ASan/UBSan and Lua `LUA_USE_APICHECK` |
-| **P4 Semantics and errors** | §5.4–5.7; A10 (full), B1–B16, D1 (`__len`, `__pairs`, `__eq`), E2, E3 (`lua.tablecall`, `lua.seq`) | Conversion, indexing, call-convention and error round-trip tests in both hosts |
-| **P5 Lifecycle, threading, embedding** | §5.8, §5.9; C1, C2, C4, C5 (check on Linux/Windows), C6, C9, C10, C12 | Thread, deadlock, flush/atexit, venv and binary-module tests; the embed test with 2 states + threads passes |
-| **P6 API completion and docs** | B17, B18, C11, C13, D1 (rest), D5, E3 (rest), E4, E5; README, stubs | Documented API matches the tests |
-| **P7 Release** | cibuildwheel wheels (manylinux/musllinux x86_64+aarch64, macOS arm64+x86_64, Windows amd64), rock upload, versioning, CHANGELOG | Install from the index works in a clean environment |
+| Phase | Content | Exit criteria | Status |
+|---|---|---|---|
+| **P0 Repo hygiene** | F11: `git init`, baseline commit of the current tree, `.gitignore`, remove `.DS_Store` | Baseline commit exists | done |
+| **P1 Build, packaging, loader** | §3.1 layout; one CMake; wheel (links Python, bundles Lua 5.5) + rock (§5.1–5.2); renames (E1, D2); A9, A16–A19, C5, C7, C8, D3, D4, F1–F3, F5–F10, F12, F13; test harness porting today's working behaviour | Wheel builds and smoke tests pass on 3.10–3.14 (macOS locally, Linux/Windows in CI). `luarocks make` works against Lua 5.3/5.4/5.5, and Lua-host smoke tests pass with libpython 3.10–3.14 found automatically. `grep -ri` for the old prefix is clean. Only the intended symbols are exported | done on macOS (Lua 5.3/5.4/5.5 × CPython 3.10–3.14, `luarocks make` and `luarocks test`); Linux/Windows in CI, not yet run |
+| **P2 Limited API + type rewrite** | `Py_LIMITED_API=0x030A0000` everywhere; heap types via `PyType_FromSpec`; A8, A13, A14, F4 | The same rock and wheel binaries pass on 3.10–3.14; `-Wcast-function-type-strict` clean; Windows builds in CI | done on macOS; Windows in CI, not yet run |
+| **P3 Memory safety** | §5.3; A1–A7, A10 (stop exiting), A11, A12, A15, A20, C1 (`PyGILState` at every entry), C3, E6 | Every ✔ crash has a regression test; suites pass under ASan/UBSan and Lua `LUA_USE_APICHECK` | done (both hosts under ASan + UBSan on macOS) |
+| **P4 Semantics and errors** | §5.4–5.7; A10 (full), B1–B16, D1 (`__len`, `__pairs`, `__eq`), E2, E3 (`lua.tablecall`, `lua.seq`) | Conversion, indexing, call-convention and error round-trip tests in both hosts | done |
+| **P5 Lifecycle, threading, embedding** | §5.8, §5.9; C1, C2, C4, C5 (check on Linux/Windows), C6, C9, C10, C12 | Thread, deadlock, flush/atexit, venv and binary-module tests; the embed test with 2 states + threads passes | done on macOS; the prefix check without a program name (C5) on Linux/Windows awaits CI; C9 (Python started by the host itself) is implemented but has no test |
+| **P6 API completion and docs** | B17, B18, C11, C13, D1 (rest), D5, E3 (rest), E4, E5; README, stubs | Documented API matches the tests | done |
+| **P7 Release** | cibuildwheel wheels (manylinux/musllinux x86_64+aarch64, macOS arm64+x86_64, Windows amd64), rock upload, versioning, CHANGELOG | Install from the index works in a clean environment | prepared: workflow, cibuildwheel and rockspec written; needs the repository URL (rockspec `source.url`) and publishing accounts |
 
 ---
 
@@ -609,7 +619,7 @@ Each phase ends with green tests, and each fixed item gets a regression test.
   - conversions, errors, indexing views;
   - call conventions;
   - refcount stability: `sys.getrefcount(True)` unchanged over a loop of comparisons;
-  - Lua stack balance, checked via a private debug hook that reports the top;
+  - Lua stack balance: every operation restores the stack top on all paths, and the suites drive 100k-key iterations and 1000-argument calls with `LUA_USE_APICHECK`;
   - threads.
 - **`tests/lua/` (Lua host):** `lua tests/lua/run.lua` runs each test file in a **separate process**, so crashes and `exit` codes are caught as failures rather than taking the runner down.
 - **`tests/embed/`:** a C host with two `lua_State`s, `require "python"` in both, cross-state objects (must error, not corrupt), closing one state while the other is in use, and calls from several threads.

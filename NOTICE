@@ -1,0 +1,12 @@
+lua-python-bridge
+Copyright (c) 2026 Aleks Tuchkov
+Based on Lunatic Python, Copyright (c) 2002-2005 Gustavo Niemeyer <gustavo@niemeyer.net>.
+Licensed under the GNU Lesser General Public License, version 2.1 or later (see LICENSE).
+
+This distribution includes third-party software:
+
+- Lua 5.5.1 (third_party/lua-5.5.1), Copyright (C) 1994-2026 Lua.org, PUC-Rio.
+  MIT license, see third_party/lua-5.5.1/LICENSE. Compiled into the Python package.
+
+- CPython 3.10 headers (third_party/python3.10-headers), Copyright (c) 2001-2022 Python Software
+  Foundation. Python Software Foundation License. Used to build the Lua module.
