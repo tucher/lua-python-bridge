@@ -1,4 +1,4 @@
-"""Binary Lua modules loaded by `require` inside the Python host (PLAN.md 5.9)."""
+"""Binary Lua modules loaded by `require` inside the Python host."""
 import os
 import shutil
 import subprocess

@@ -68,7 +68,7 @@ endfunction()
 if(LPB_BUILD_PYTHON_MODULE OR LPB_BUILD_TESTS)
   file(GLOB LPB_LUA_SOURCES ${LPB_DIR}/third_party/lua-5.5.1/src/*.c)
   if(WIN32)
-    # Binary Lua modules link against the Lua DLL by name (PLAN.md 5.9).
+    # Binary Lua modules link against the Lua DLL by name.
     add_library(lpb_lua SHARED ${LPB_LUA_SOURCES})
     set_target_properties(lpb_lua PROPERTIES OUTPUT_NAME lua55)
     target_compile_definitions(lpb_lua PUBLIC LUA_BUILD_AS_DLL)
@@ -106,7 +106,7 @@ if(LPB_BUILD_PYTHON_MODULE)
   if(WIN32)
     target_link_libraries(lpb_python PRIVATE lpb_lua)
   else()
-    # The whole Lua API is exported for binary Lua modules (PLAN.md 5.9).
+    # The whole Lua API is exported for binary Lua modules.
     target_link_libraries(lpb_python PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,lpb_lua>")
     lpb_exports(lpb_python lua_exports PyInit_lua "lua_*" "luaL_*" "luaopen_*")
   endif()

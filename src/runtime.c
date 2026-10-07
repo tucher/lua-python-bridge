@@ -4,7 +4,7 @@
  * Copyright (c) 2026 Aleks Tuchkov
  * SPDX-License-Identifier: LGPL-2.1-or-later
  *
- * Rules (see PLAN.md, section 5.8):
+ * Rules (README: Threads):
  *  - The GIL is not held while the bridge runs Lua code.
  *  - A thread may run Lua on a state only while it "owns" the state's runtime. A Lua host owns
  *    its runtime implicitly (LPB_OWNER_HOST) except while it is inside a call into Python

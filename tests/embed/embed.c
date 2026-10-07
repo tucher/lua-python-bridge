@@ -2,7 +2,7 @@
  * Embedding test: a C host with several Lua states and threads, each loading the Lua module
  * "python" through require (LUA_CPATH must point at the built module).
  *
- * Covers the ownership rules of PLAN.md 5.8: states on one thread calling each other through
+ * Covers the ownership rules (README: Threads): states on one thread calling each other through
  * Python ("borrowing"), threads waiting for a state that its host is running, and states moving
  * between threads.
  */

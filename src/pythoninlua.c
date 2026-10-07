@@ -46,7 +46,7 @@ static PyObject *lua_string_to_py(lua_State *L, int idx) {
 }
 
 /* ------------------------------------------------------------------------------------------ */
-/* Argument tables (PLAN.md 5.7)                                                              */
+/* Argument tables (README: Calls)                                                            */
 /* ------------------------------------------------------------------------------------------ */
 
 #define LPB_MAX_POSITIONAL (1 << 20)

@@ -275,7 +275,7 @@ static int LuaObject_bool(PyObject *self) {
     return 1;     /* nil and false never become LuaObjects */
 }
 
-/* call: f(*a, **b) -> result. Keyword arguments arrive as a trailing table (PLAN.md 5.7). */
+/* call: f(*a, **b) -> result. Keyword arguments arrive as a trailing table (README: Calls). */
 static int op_call(lua_State *L) {
     op_ctx *c = CTX(L);
     Py_ssize_t n = PyTuple_Size(c->a), i, pos = 0;

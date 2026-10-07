@@ -35,7 +35,7 @@ wheel.packages = []
 build-dir = "build/{wheel_tag}"
 cmake.define.LPB_BUILD_PYTHON_MODULE = "ON"
 cmake.define.LPB_BUILD_LUA_MODULE = "OFF"
-sdist.exclude = [".github", "build", "PLAN.md", "tools"]
+sdist.exclude = [".github", "build", "tools"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]

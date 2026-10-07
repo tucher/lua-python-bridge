@@ -6,7 +6,7 @@
  *
  * The module is compiled against the CPython 3.10 limited API. Each CPython function it uses is
  * defined here under its real name as a trampoline into the loaded libpython, so the rest of the
- * bridge is ordinary CPython code. See PLAN.md, sections 5.1 and 5.2.
+ * bridge is ordinary CPython code.
  */
 #include "bridge.h"
 
