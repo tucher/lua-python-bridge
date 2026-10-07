@@ -16,12 +16,21 @@ local function busy(seconds)
   while os.clock() - t < seconds do end
 end
 
-T.test("Python threads run while Lua code runs", function()
+-- Iterations a background Python thread manages while `work` runs.
+local function spin_count(work)
   python.execute("counter[0] = 0; stop[0] = False\nth = threading.Thread(target=spin); th.start()")
-  busy(0.5)
+  work()
   local n = python.eval("counter[0]")
   python.execute("stop[0] = True; th.join()")
-  T.truthy(n > 50, "background Python thread starved: " .. n .. " iterations")
+  return n
+end
+
+T.test("Python threads run while Lua code runs", function()
+  -- Relative to the main thread sleeping in Python, so that timer resolution does not matter.
+  local baseline = spin_count(function() python.execute("time.sleep(0.5)") end)
+  local during_lua = spin_count(function() busy(0.5) end)
+  T.truthy(during_lua > baseline / 4,
+    ("background Python thread starved: %d iterations, %d while sleeping"):format(during_lua, baseline))
 end)
 
 T.test("a Python thread can call Lua while Lua waits in Python", function()

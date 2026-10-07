@@ -44,6 +44,10 @@ testpaths = ["tests/python"]
 # One abi3 wheel per platform: built for cp310, then reused and tested on every later version.
 build = "cp310-* cp311-* cp312-* cp313-* cp314-*"
 skip = "*-win32 *_i686"
-archs = ["native"]          # the CI matrix has one runner per architecture
+archs = ["native"]          # one CI runner per architecture
 test-extras = ["test"]
 test-command = "pytest {project}/tests/python -q"
+
+[tool.cibuildwheel.macos]
+# Intel wheels are cross-built on the Apple Silicon runner and tested under Rosetta.
+archs = ["arm64", "x86_64"]

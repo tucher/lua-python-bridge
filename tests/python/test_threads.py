@@ -4,7 +4,8 @@ import time
 import lua
 
 
-def test_gil_is_released_while_lua_runs():
+def spin_count(work):
+    """Iterations a background Python thread manages while `work` runs."""
     counter = [0]
     stop = threading.Event()
 
@@ -16,11 +17,19 @@ def test_gil_is_released_while_lua_runs():
     th = threading.Thread(target=spin)
     th.start()
     try:
-        lua.execute("local t = os.clock() while os.clock() - t < 0.5 do end")
+        work()
     finally:
         stop.set()
         th.join()
-    assert counter[0] > 50
+    return counter[0]
+
+
+def test_gil_is_released_while_lua_runs():
+    # Relative to the same thread while the main thread sleeps, so that timer resolution
+    # (about 1 ms on Windows) does not matter. A starved thread gets almost nothing.
+    baseline = spin_count(lambda: time.sleep(0.5))
+    during_lua = spin_count(lambda: lua.execute("local t = os.clock() while os.clock() - t < 0.5 do end"))
+    assert during_lua > baseline / 4, (during_lua, baseline)
 
 
 def test_threads_share_the_state_safely():

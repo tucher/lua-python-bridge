@@ -11,6 +11,7 @@
  */
 #include "bridge.h"
 
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -387,9 +388,10 @@ static PyObject *LuaObject_repr(PyObject *self) {
             return NULL;
         if (c.result)
             return c.result;
-        snprintf(buf, sizeof buf, "<Lua %s at %p>", o->tname, o->ptr);
+        snprintf(buf, sizeof buf, "<Lua %s at 0x%" PRIxPTR ">", o->tname, (uintptr_t)o->ptr);
     } else {
-        snprintf(buf, sizeof buf, "<Lua %s at %p (state closed)>", o->tname, o->ptr);
+        snprintf(buf, sizeof buf, "<Lua %s at 0x%" PRIxPTR " (state closed)>", o->tname,
+                 (uintptr_t)o->ptr);
     }
     return PyUnicode_FromString(buf);
 }
