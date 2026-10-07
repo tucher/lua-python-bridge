@@ -1,6 +1,6 @@
 # lua-python-bridge: restructure and fix plan
 
-> Temporary working document. **Status: P0–P6 implemented and tested on macOS; P7 prepared (CI, cibuildwheel, rockspec) but not run or published.** Last updated 2026-10-01.
+> Temporary working document. **Status: P0–P6 implemented and tested on macOS; P7 prepared (CI, cibuildwheel, rockspec), not yet published.** Last updated 2026-10-01.
 >
 > - ✔ = reproduced in a scratch build: macOS arm64, Lua 5.4.7 built with `LUA_USE_APICHECK`, Homebrew CPython 3.10–3.14, and a stand-in for `dylib.hpp`.
 > - ◇ = from reading the code. This includes the Linux- and Windows-only paths, which could not be run here.
@@ -609,7 +609,7 @@ Each phase ends with green tests, and each fixed item gets a regression test.
 | **P4 Semantics and errors** | §5.4–5.7; A10 (full), B1–B16, D1 (`__len`, `__pairs`, `__eq`), E2, E3 (`lua.tablecall`, `lua.seq`) | Conversion, indexing, call-convention and error round-trip tests in both hosts | done |
 | **P5 Lifecycle, threading, embedding** | §5.8, §5.9; C1, C2, C4, C5 (check on Linux/Windows), C6, C9, C10, C12 | Thread, deadlock, flush/atexit, venv and binary-module tests; the embed test with 2 states + threads passes | done on macOS; the prefix check without a program name (C5) on Linux/Windows awaits CI; C9 (Python started by the host itself) is implemented but has no test |
 | **P6 API completion and docs** | B17, B18, C11, C13, D1 (rest), D5, E3 (rest), E4, E5; README, stubs | Documented API matches the tests | done |
-| **P7 Release** | cibuildwheel wheels (manylinux/musllinux x86_64+aarch64, macOS arm64+x86_64, Windows amd64), rock upload, versioning, CHANGELOG | Install from the index works in a clean environment | prepared: workflow, cibuildwheel and rockspec written; needs the repository URL (rockspec `source.url`) and publishing accounts |
+| **P7 Release** | cibuildwheel wheels (manylinux/musllinux x86_64+aarch64, macOS arm64+x86_64, Windows amd64), rock upload, versioning, CHANGELOG | Install from the index works in a clean environment | prepared: workflow, cibuildwheel and rockspec written, repository at github.com/tucher/lua-python-bridge; needs publishing accounts |
 
 ---
 

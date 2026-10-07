@@ -20,6 +20,10 @@ classifiers = [
   "Operating System :: Microsoft :: Windows",
 ]
 
+[project.urls]
+Homepage = "https://github.com/tucher/lua-python-bridge"
+Issues = "https://github.com/tucher/lua-python-bridge/issues"
+
 [project.optional-dependencies]
 test = ["pytest>=7"]
 

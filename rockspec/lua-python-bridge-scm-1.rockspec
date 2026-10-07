@@ -3,8 +3,7 @@ package = "lua-python-bridge"
 version = "scm-1"
 
 source = {
-   -- Replace with the repository the rock is published from.
-   url = "git+https://github.com/OWNER/lua-python-bridge.git",
+   url = "git+https://github.com/tucher/lua-python-bridge.git",
 }
 
 description = {
@@ -14,6 +13,7 @@ description = {
       one build works with any CPython 3.10 or newer; it finds the interpreter on PATH (or
       LUA_PYTHON_EXECUTABLE / LUA_PYTHON_LIBPYTHON) and adopts its sys.path, virtualenvs included.
    ]],
+   homepage = "https://github.com/tucher/lua-python-bridge",
    license = "LGPL-2.1-or-later",
 }
 
